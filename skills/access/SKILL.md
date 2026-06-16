@@ -21,6 +21,12 @@ Manages access control for the Lark channel. All state lives in
 `~/.claude/channels/lark/access.json`. You never talk to Lark — you
 just edit JSON; the channel server re-reads it.
 
+> **Permission approval:** When Claude Code requests permission for a dangerous
+> operation, the channel server pushes an interactive Allow/Deny card to **every
+> allowlisted DM** (`allowFrom`). Group chats never receive permission cards.
+> Only allowlisted senders can act on the buttons. This is automatic — there is
+> no `access.json` setting to configure it.
+
 Arguments passed: `$ARGUMENTS`
 
 ---

@@ -6,6 +6,10 @@ Connect a Lark bot to your Claude Code with an MCP server.
 
 When the bot receives a message, the MCP server forwards it to Claude and provides tools to reply, react, and edit messages. Supports both **Lark** (international) and **Feishu** (China).
 
+> **Fork notice:** Forked from [MocA-Love/claude-code-lark](https://github.com/MocA-Love/claude-code-lark) (Apache-2.0). See [NOTICE](./NOTICE).
+>
+> **Added in this fork — remote permission approval:** When Claude Code asks for permission to run a dangerous operation, this plugin pushes a Feishu/Lark **interactive card** to allowlisted DMs. Tap **✅ 允许 (Allow)** or **❌ 拒绝 (Deny)** right in chat to authorize remotely — no need to switch back to the terminal. (Declares the `claude/channel/permission` MCP capability; group chats are excluded for safety.)
+
 ## For LLMs
 
 If you're an AI assistant helping a user install this plugin, see [llms.md](./llms.md) for automated installation instructions.
