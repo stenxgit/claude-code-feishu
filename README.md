@@ -1,6 +1,6 @@
 # Lark (Larksuite / Feishu)
 
-[日本語版はこちら](./README.ja.md)
+[简体中文版](./README.zh-CN.md)
 
 Connect a Lark bot to your Claude Code with an MCP server.
 
@@ -80,6 +80,8 @@ Exit your session and start a new one:
 claude --dangerously-load-development-channels plugin:lark@claude-code-feishu
 ```
 
+> **Why `--dangerously-load-development-channels`?** Claude Code only injects inbound messages for channel plugins on its built-in *approved channels* allowlist. This fork isn't an official plugin, so it isn't on that list — without the flag the MCP tools still load (you can send), but **incoming messages are silently skipped** (you can't receive). The flag opts this plugin in. It's required every launch; there's no `settings.json` equivalent.
+
 **8. Pair.**
 
 With Claude Code running, DM your bot on Lark — it replies with a pairing code. In your Claude Code session:
@@ -119,6 +121,24 @@ or change it later on its own:
 See **[ACCESS.md](./ACCESS.md)** for DM policies, group chats, mention detection, delivery config, skill commands, and the `access.json` schema.
 
 Quick reference: IDs are Lark **open_id** values (e.g., `ou_xxxx`) for users and **chat_id** values (e.g., `oc_xxxx`) for chats. Default policy is `pairing`. Group chats are opt-in per chat_id.
+
+## Remote permission approval
+
+This is the feature this fork adds on top of upstream. When Claude Code needs your approval to run a dangerous operation (an unallowlisted shell command, a file write, etc.), instead of blocking at the terminal it pushes an **interactive card** to your DM with the bot — so you can authorize from anywhere, including your phone.
+
+**What you see:** a card showing the tool name and the operation details, with three buttons:
+
+- **查看详情 (Details)** — expand the full request payload
+- **✅ 允许 (Allow)** — approve this one operation
+- **❌ 拒绝 (Deny)** — reject it
+
+Tap a button and the card updates in place to show the outcome; the decision flows straight back into the waiting Claude Code session.
+
+**How it works:** the plugin declares the `claude/channel/permission` MCP capability. On a `notifications/claude/channel/permission_request`, it sends the card to every allowlisted DM. The button tap arrives as a `card.action.trigger` event (routed over the same WebSocket as messages) and the plugin replies with `notifications/claude/channel/permission` carrying `{request_id, behavior}`.
+
+**Setup:** none beyond the steps above. The persistent-connection event subscription from step 3 covers card callbacks too — no separate webhook or callback URL is needed. (The card uses `update_multi: true` so it can refresh in place after a tap.)
+
+**Safety:** cards are sent to allowlisted DMs only. **Group chats are excluded** — approvals never go to a group, and only the `open_id`s in your allowlist can act on them.
 
 ## Tools exposed to the assistant
 

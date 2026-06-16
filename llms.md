@@ -80,7 +80,7 @@ claude-code-feishu/
 ├── package.json             # Dependencies
 ├── ACCESS.md                # Access control documentation
 ├── README.md                # English documentation
-└── README.ja.md             # Japanese documentation
+└── README.zh-CN.md          # Simplified Chinese documentation
 ```
 
 ## Troubleshooting

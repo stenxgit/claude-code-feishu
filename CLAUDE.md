@@ -31,7 +31,7 @@ server.ts              # メインMCPサーバー（全ロジック単一ファ�
 package.json           # 依存: @larksuiteoapi/node-sdk, @modelcontextprotocol/sdk
 ACCESS.md              # アクセス制御ドキュメント
 README.md              # 英語版ドキュメント
-README.ja.md           # 日本語版ドキュメント
+README.zh-CN.md        # 簡体字中国語版ドキュメント
 llms.md                # LLM向け自動インストールガイド
 ```
 
