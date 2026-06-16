@@ -1,0 +1,15 @@
+claude-code-feishu
+
+This product includes software developed by MocA-Love
+(https://github.com/MocA-Love/claude-code-lark), licensed under the
+Apache License, Version 2.0.
+
+Modifications in this fork (2026), by stenxgit
+(https://github.com/stenxgit/claude-code-feishu):
+  - Added Claude Code permission-request relay over Feishu/Lark interactive
+    cards: declares the `claude/channel/permission` MCP capability, pushes an
+    Allow/Deny card to allowlisted DMs on permission_request, and handles
+    card.action.trigger to relay the verdict back to Claude Code.
+
+The permission-handler scaffolding was informed by
+AnInteger/claude-channel-feishu (Apache-2.0).

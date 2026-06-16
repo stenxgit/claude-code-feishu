@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "claude-code-lark",
-  "description": "Lark (Larksuite/Feishu) channel plugin for Claude Code",
+  "name": "claude-code-feishu",
+  "description": "Lark (Larksuite/Feishu) channel plugin for Claude Code, with remote permission approval via interactive cards. Forked from MocA-Love/claude-code-lark.",
   "owner": {
-    "name": "MocA-Love"
+    "name": "stenxgit"
   },
   "plugins": [
     {
       "name": "lark",
-      "description": "Lark (Larksuite/Feishu) messaging bridge with built-in access control. Manage pairing, allowlists, and policy via /lark:access.",
+      "description": "Lark (Larksuite/Feishu) messaging bridge with built-in access control and remote permission approval. Manage pairing, allowlists, and policy via /lark:access.",
       "category": "productivity",
       "source": "./"
     }
