@@ -28,58 +28,49 @@ Read both state files and give the user a complete picture:
    `LARK_APP_ID` and `LARK_APP_SECRET`. Show set/not-set; if set, show first
    4 chars of each, masked.
 
-2. **Domain** — check for `LARK_DOMAIN`. Default is `open.larksuite.com`
-   (Lark international). For Feishu (China), it should be `open.feishu.cn`.
+2. **Domain** — check for `LARK_DOMAIN`. Default is `open.feishu.cn`
+   (Feishu, China). For Lark international, it should be `open.larksuite.com`.
 
-3. **Webhook** — check for `LARK_WEBHOOK_PORT` (default 9876). Show the
-   expected webhook URL format.
-
-4. **Encryption** — check for `LARK_ENCRYPT_KEY` and `LARK_VERIFICATION_TOKEN`.
-   Show set/not-set.
-
-5. **Access** — read `~/.claude/channels/lark/access.json` (missing file
+3. **Access** — read `~/.claude/channels/lark/access.json` (missing file
    = defaults: `dmPolicy: "pairing"`, empty allowlist). Show:
    - DM policy and what it means in one line
    - Allowed senders: count, and list open_id values
    - Pending pairings: count, with codes
    - Group chats opted in: count
 
-6. **What next** — end with a concrete next step based on state:
-   - No credentials → *"Run `/lark:configure` with your Lark app credentials
-     from the Lark Open Platform Developer Console."*
-   - Credentials set, no webhook configured → *"Start ngrok with
-     `ngrok http 9876`, then set the webhook URL in Lark Developer Console
-     → Event Subscription → Request URL."*
+4. **What next** — end with a concrete next step based on state:
+   - No credentials → *"Run `/lark:configure <app_id> <app_secret>` with your
+     app credentials from the Feishu/Lark Open Platform Developer Console."*
    - Credentials set, policy is pairing, nobody allowed → *"DM your bot on
-     Lark. It replies with a code; approve with `/lark:access pair <code>`."*
+     Feishu/Lark. It replies with a code; approve with `/lark:access pair <code>`."*
    - Credentials set, someone allowed → *"Ready. DM your bot to reach the
      assistant."*
 
 **Push toward lockdown — always.** Once the IDs are in, pairing has done its
 job and should be turned off.
 
-### `<app_id> <app_secret>` — save credentials
+> This channel uses a WebSocket long connection (Lark SDK `WSClient`) — there
+> is **no webhook, no public URL, no ngrok, and no encryption key** to set up.
+> Just credentials + (optionally) domain.
+
+### `<app_id> <app_secret> [domain]` — save credentials (one-liner)
 
 1. Treat first arg as app_id, second as app_secret (trim whitespace).
-   Lark App IDs start with `cli_`. App secrets are alphanumeric strings.
-2. `mkdir -p ~/.claude/channels/lark`
-3. Read existing `.env` if present; update/add the `LARK_APP_ID=` and
-   `LARK_APP_SECRET=` lines, preserve other keys. Write back, no quotes.
-4. Confirm, then show the no-args status so the user sees where they stand.
+   App IDs start with `cli_`. App secrets are alphanumeric strings.
+2. Third arg is the optional domain. **Default (omitted) = `open.feishu.cn`**
+   (Feishu, China). Pass `open.larksuite.com` for Lark international.
+3. `mkdir -p ~/.claude/channels/lark`
+4. Read existing `.env` if present; update/add the `LARK_APP_ID=`,
+   `LARK_APP_SECRET=`, and `LARK_DOMAIN=` lines, preserve other keys. Write
+   back, no quotes. If `LARK_DOMAIN` is already set and no domain arg was
+   given, leave it as-is rather than overwriting.
+5. Confirm, then show the no-args status so the user sees where they stand.
 
-### `domain <domain>` — set API domain
+### `domain <domain>` — change API domain only
 
 Set `LARK_DOMAIN` in `.env`. Valid values:
-- `open.larksuite.com` (Lark international, default)
-- `open.feishu.cn` (Feishu, China)
-
-### `encrypt <encrypt_key> [verification_token]` — set encryption
-
-Set `LARK_ENCRYPT_KEY` and optionally `LARK_VERIFICATION_TOKEN` in `.env`.
-
-### `port <port>` — set webhook port
-
-Set `LARK_WEBHOOK_PORT` in `.env`. Default is 9876.
+- `open.feishu.cn` (Feishu, China, default)
+- `open.larksuite.com` (Lark international)
 
 ### `clear` — remove credentials
 

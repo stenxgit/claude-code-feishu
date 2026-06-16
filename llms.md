@@ -32,9 +32,9 @@ EOF
 chmod 600 ~/.claude/channels/lark/.env
 ```
 
-For Feishu (China), also add:
+Domain defaults to `open.feishu.cn` (Feishu, China). For Lark international, also add:
 ```
-LARK_DOMAIN=open.feishu.cn
+LARK_DOMAIN=open.larksuite.com
 ```
 
 ### 5. Launch with channel flag

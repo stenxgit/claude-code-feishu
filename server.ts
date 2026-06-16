@@ -45,7 +45,8 @@ try {
 
 const APP_ID = process.env.LARK_APP_ID
 const APP_SECRET = process.env.LARK_APP_SECRET
-const API_DOMAIN = process.env.LARK_DOMAIN ?? 'open.larksuite.com'
+// Default to Feishu (China). Set LARK_DOMAIN=open.larksuite.com for Lark international.
+const API_DOMAIN = process.env.LARK_DOMAIN ?? 'open.feishu.cn'
 const API_BASE = `https://${API_DOMAIN}/open-apis`
 const STATIC = process.env.LARK_ACCESS_MODE === 'static'
 

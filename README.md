@@ -98,15 +98,21 @@ Pairing is for capturing IDs. Once you're in, switch to `allowlist`:
 /lark:access policy allowlist
 ```
 
-## Feishu (China) Setup
+## Domain (Feishu vs Lark international)
 
-For Feishu instead of Lark, set the domain:
+The domain **defaults to `open.feishu.cn` (Feishu, China)** — no extra step needed for Feishu.
+
+For Lark international, pass the domain as the optional third argument when configuring:
 
 ```
-/lark:configure domain open.feishu.cn
+/lark:configure cli_xxxx your_app_secret open.larksuite.com
 ```
 
-This changes the API base URL from `open.larksuite.com` to `open.feishu.cn`.
+or change it later on its own:
+
+```
+/lark:configure domain open.larksuite.com
+```
 
 ## Access control
 
@@ -132,7 +138,7 @@ All set in `~/.claude/channels/lark/.env`:
 | --- | --- | --- |
 | `LARK_APP_ID` | Yes | App ID from Developer Console (starts with `cli_`) |
 | `LARK_APP_SECRET` | Yes | App Secret from Developer Console |
-| `LARK_DOMAIN` | No | API domain. Default: `open.larksuite.com`. Use `open.feishu.cn` for Feishu. |
+| `LARK_DOMAIN` | No | API domain. Default: `open.feishu.cn` (Feishu). Use `open.larksuite.com` for Lark international. |
 | `LARK_ACCESS_MODE` | No | Set to `static` to freeze access config at boot. |
 
 ## Architecture
