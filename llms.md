@@ -1,31 +1,22 @@
-# claude-code-lark — LLM Installation Guide
+# claude-code-feishu — LLM Installation Guide
 
-This file is designed for LLMs (Claude Code, Cursor, Windsurf, etc.) to automatically install and configure the Lark channel plugin.
+This file is designed for LLMs (Claude Code, Cursor, Windsurf, etc.) to automatically install and configure the Lark/Feishu channel plugin.
+
+Forked from [MocA-Love/claude-code-lark](https://github.com/MocA-Love/claude-code-lark) (Apache-2.0), adding remote permission approval via Feishu interactive cards.
 
 ## What this plugin does
 
-Connects a Lark (Larksuite/Feishu) bot to Claude Code via WebSocket long connection. Messages sent to the bot on Lark are forwarded to the Claude Code session, and the assistant can reply back through Lark.
+Connects a Lark (Larksuite/Feishu) bot to Claude Code via WebSocket long connection. Messages sent to the bot on Lark are forwarded to the Claude Code session, and the assistant can reply back through Lark. When Claude Code requests permission for a dangerous operation, an interactive Allow/Deny card is pushed to allowlisted DMs for remote approval.
 
 ## Automated Installation Steps
 
 Run the following commands in order:
 
-### 1. Clone the repository
+### 1. Register the marketplace and install
 
 ```bash
-git clone https://github.com/MocA-Love/claude-code-lark.git ~/claude-code-lark
-```
-
-### 2. Register as a local marketplace
-
-```bash
-claude plugin marketplace add ~/claude-code-lark
-```
-
-### 3. Install the plugin
-
-```bash
-claude plugin install lark@claude-code-lark
+claude plugin marketplace add stenxgit/claude-code-feishu
+claude plugin install lark@claude-code-feishu
 ```
 
 ### 4. Configure credentials
@@ -49,7 +40,7 @@ LARK_DOMAIN=open.feishu.cn
 ### 5. Launch with channel flag
 
 ```bash
-claude --dangerously-load-development-channels plugin:lark@claude-code-lark
+claude --dangerously-load-development-channels plugin:lark@claude-code-feishu
 ```
 
 ## Lark App Prerequisites (User must do manually)
@@ -59,8 +50,8 @@ Before the plugin can work, the user needs to create a Lark app:
 1. Go to [Lark Open Platform](https://open.larksuite.com/app) → Create Custom App
 2. Enable **Bot** under Features
 3. Add permissions: `im:message`, `im:message:readonly`, `im:message:send_as_bot`, `im:message.group_at_msg:readonly`, `im:message.group_msg`, `im:message.p2p_msg:readonly`, `im:resource`, `im:chat`, `im:chat:readonly`
-4. Under **Events & Callbacks** → Event Configuration:
-   - Select **"Receive events through persistent connection"**
+4. Under **Events & Callbacks** → Event/Callback Configuration:
+   - Select **"Receive events/callbacks through persistent connection (使用长连接接收事件/回调)"** — this single setting covers both message events and interactive-card button callbacks (`card.action.trigger`), which the permission cards depend on
    - Add event: `im.message.receive_v1`
 5. Publish and approve the app version
 6. Copy **App ID** (`cli_xxx`) and **App Secret** from Credentials & Basic Info
@@ -76,7 +67,7 @@ Once the channel is running, the user should:
 ## File Structure
 
 ```
-claude-code-lark/
+claude-code-feishu/
 ├── .claude-plugin/
 │   ├── plugin.json          # Plugin metadata
 │   └── marketplace.json     # Marketplace definition

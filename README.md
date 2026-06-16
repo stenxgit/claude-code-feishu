@@ -60,9 +60,8 @@ Go to **Credentials & Basic Info**. Copy the **App ID** and **App Secret**.
 **5. Install the plugin.**
 
 ```bash
-git clone https://github.com/MocA-Love/claude-code-lark.git
-claude plugin marketplace add /path/to/claude-code-lark
-claude plugin install lark@claude-code-lark
+claude plugin marketplace add stenxgit/claude-code-feishu
+claude plugin install lark@claude-code-feishu
 ```
 
 **6. Give the server the credentials.**
@@ -78,7 +77,7 @@ Writes `LARK_APP_ID=...` and `LARK_APP_SECRET=...` to `~/.claude/channels/lark/.
 Exit your session and start a new one:
 
 ```sh
-claude --dangerously-load-development-channels plugin:lark@claude-code-lark
+claude --dangerously-load-development-channels plugin:lark@claude-code-feishu
 ```
 
 **8. Pair.**
@@ -187,7 +186,7 @@ kill <pid>
 Claude Code caches installed plugins at `~/.claude/plugins/cache/`. When developing locally, changes to source files are **not automatically reflected**. Clear the cache after each change:
 
 ```bash
-rm -rf ~/.claude/plugins/cache/claude-code-lark/
+rm -rf ~/.claude/plugins/cache/claude-code-feishu/
 ```
 
 Then restart your Claude Code session.
