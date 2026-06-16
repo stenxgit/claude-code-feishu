@@ -17,6 +17,7 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import * as Lark from '@larksuiteoapi/node-sdk'
+import { z } from 'zod'
 import { randomBytes } from 'crypto'
 import { execSync } from 'child_process'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync } from 'fs'
@@ -597,7 +598,7 @@ async function uploadImage(filePath: string): Promise<string> {
 const mcp = new Server(
   { name: 'lark', version: '1.0.0' },
   {
-    capabilities: { tools: {}, experimental: { 'claude/channel': {} } },
+    capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
     instructions: [
       'The sender reads Lark (Larksuite/Feishu), not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
       '',
@@ -613,6 +614,143 @@ const mcp = new Server(
     ].join('\n'),
   },
 )
+
+// ─── Permission relay (Claude Code dangerous-op approval via Feishu cards) ────
+// When Claude Code requests permission for a tool call, push an interactive
+// card to allowlisted DMs with Allow / Deny buttons. Mirrors the Telegram
+// plugin's permission flow, but uses Feishu interactive cards instead of text.
+
+// Cached request details, keyed by request_id, for the "See more" expansion.
+const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+
+// Build a Feishu interactive card for a permission request.
+// expanded=false → compact card with [See more] [Allow] [Deny].
+// expanded=true  → shows description + input_preview; outcome (if set) replaces buttons.
+function buildPermCard(
+  requestId: string,
+  toolName: string,
+  expanded: boolean,
+  detail?: { description: string; input_preview: string },
+  outcome?: string,
+): any {
+  const elements: any[] = []
+  if (expanded && detail) {
+    let pretty: string
+    try { pretty = JSON.stringify(JSON.parse(detail.input_preview), null, 2) }
+    catch { pretty = detail.input_preview }
+    if (detail.description) {
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**说明**: ${detail.description}` } })
+    }
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '```\n' + pretty + '\n```' } })
+  }
+  if (outcome) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content: outcome } })
+  } else {
+    const actions: any[] = []
+    if (!expanded) {
+      actions.push({
+        tag: 'button', text: { tag: 'plain_text', content: '查看详情' },
+        type: 'default', value: { action: 'more', request_id: requestId },
+      })
+    }
+    actions.push({
+      tag: 'button', text: { tag: 'plain_text', content: '✅ 允许' },
+      type: 'primary', value: { action: 'allow', request_id: requestId },
+    })
+    actions.push({
+      tag: 'button', text: { tag: 'plain_text', content: '❌ 拒绝' },
+      type: 'danger', value: { action: 'deny', request_id: requestId },
+    })
+    elements.push({ tag: 'action', actions })
+  }
+  return {
+    config: { wide_screen_mode: true },
+    header: { title: { tag: 'plain_text', content: `🔐 权限请求：${toolName}` }, template: 'orange' },
+    elements,
+  }
+}
+
+// Receive permission_request from Claude Code → push a card to every
+// allowlisted DM. Groups are intentionally excluded — only explicitly paired
+// DM senders may approve, matching the Telegram plugin's single-user model.
+mcp.setNotificationHandler(
+  z.object({
+    method: z.literal('notifications/claude/channel/permission_request'),
+    params: z.object({
+      request_id: z.string(),
+      tool_name: z.string(),
+      description: z.string(),
+      input_preview: z.string(),
+    }),
+  }),
+  async ({ params }) => {
+    const { request_id, tool_name, description, input_preview } = params
+    pendingPermissions.set(request_id, { tool_name, description, input_preview })
+    const access = loadAccess()
+    const mapping = loadChatMapping()
+    const card = buildPermCard(request_id, tool_name, false)
+    for (const openId of access.allowFrom) {
+      const chatId = mapping.openToChat[openId]
+      if (!chatId) continue
+      void larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
+        receive_id: chatId,
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
+      }).catch(e => process.stderr.write(`lark channel: permission card send to ${chatId} failed: ${e}\n`))
+    }
+  },
+)
+
+// Handle a card button tap (card.action.trigger). The handler's return value
+// is sent back over the long connection to update the card / show a toast.
+// Field names follow the Feishu card-callback payload; adjust if the live
+// payload differs (verified during end-to-end testing).
+async function handleCardAction(data: any): Promise<any> {
+  const openId = data?.operator?.open_id ?? data?.open_id ?? ''
+  const value = data?.action?.value ?? {}
+  const action = value.action as string | undefined
+  const requestId = value.request_id as string | undefined
+  if (!action || !requestId) return {}
+
+  // Only allowlisted DM senders may approve.
+  const access = loadAccess()
+  if (!access.allowFrom.includes(openId)) {
+    return { toast: { type: 'error', content: '无权限' } }
+  }
+
+  if (action === 'more') {
+    const d = pendingPermissions.get(requestId)
+    if (!d) return { toast: { type: 'warning', content: '详情已过期' } }
+    return {
+      card: {
+        type: 'raw',
+        data: buildPermCard(requestId, d.tool_name, true, { description: d.description, input_preview: d.input_preview }),
+      },
+    }
+  }
+
+  if (action === 'allow' || action === 'deny') {
+    void mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id: requestId, behavior: action },
+    })
+    const d = pendingPermissions.get(requestId)
+    pendingPermissions.delete(requestId)
+    const outcome = action === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
+    return {
+      toast: { type: 'success', content: outcome },
+      card: {
+        type: 'raw',
+        data: buildPermCard(
+          requestId, d?.tool_name ?? '', true,
+          d ? { description: d.description, input_preview: d.input_preview } : undefined,
+          outcome,
+        ),
+      },
+    }
+  }
+  return {}
+}
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -1120,6 +1258,13 @@ const eventDispatcher = new Lark.EventDispatcher({}).register({
       process.stderr.write(`lark: handleInbound failed: ${e}\n`),
     )
   },
+  // Permission card button taps arrive here over the long connection. The
+  // returned object updates the card / shows a toast.
+  'card.action.trigger': (data: any) =>
+    handleCardAction(data).catch(e => {
+      process.stderr.write(`lark: handleCardAction failed: ${e}\n`)
+      return {}
+    }),
 })
 
 let wsClient: InstanceType<typeof Lark.WSClient> | null = null
