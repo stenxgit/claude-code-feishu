@@ -664,7 +664,9 @@ function buildPermCard(
     elements.push({ tag: 'action', actions })
   }
   return {
-    config: { wide_screen_mode: true },
+    // update_multi: true is required for the card to be updatable by the
+    // card.action.trigger callback response (verified via spike 2026-06-16).
+    config: { wide_screen_mode: true, update_multi: true },
     header: { title: { tag: 'plain_text', content: `🔐 权限请求：${toolName}` }, template: 'orange' },
     elements,
   }
