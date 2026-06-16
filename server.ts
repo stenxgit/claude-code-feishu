@@ -1254,7 +1254,21 @@ const larkDomain = API_DOMAIN === 'open.feishu.cn'
   ? Lark.Domain.Feishu
   : Lark.Domain.Lark
 
-const eventDispatcher = new Lark.EventDispatcher({}).register({
+// The Lark SDK's default logger writes to stdout via console.log/info, which
+// corrupts the MCP stdio protocol (Claude Code logs "Ignoring non-JSON line on
+// stdout"). Route all SDK logs to stderr — Claude Code captures stderr into its
+// MCP logs, so nothing is lost. Both EventDispatcher and WSClient construct
+// their own logger, so both must be given this one. LoggerProxy passes each
+// call's args as a single array, hence the .flat().
+const stderrLogger = {
+  error: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
+  warn: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
+  info: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
+  debug: () => {},
+  trace: () => {},
+}
+
+const eventDispatcher = new Lark.EventDispatcher({ logger: stderrLogger }).register({
   'im.message.receive_v1': (data: any) => {
     if (data.sender?.sender_type === 'app') return
     handleInbound(data).catch(e =>
@@ -1280,6 +1294,7 @@ function startWsClient(): void {
     appSecret: APP_SECRET!,
     domain: larkDomain,
     loggerLevel: Lark.LoggerLevel.info,
+    logger: stderrLogger,
   })
   wsClient.start({ eventDispatcher })
   process.stderr.write(
@@ -1305,8 +1320,21 @@ if (acquireLock()) {
   )
 }
 
+// Parent pid at startup (the `bun run` wrapper launched by Claude Code). If it
+// changes, our parent chain died and we were reparented (e.g. to init/systemd).
+const INITIAL_PPID = process.ppid
+
 // Poll lock ownership and takeover signals
 lockCheckInterval = setInterval(() => {
+  // If our parent died we were reparented away from the original wrapper. Exit
+  // so we release ws.lock and the WebSocket instead of lingering as an orphan
+  // that starves every future session of inbound messages. (stdin EOF below
+  // covers the common case; this catches reparenting if EOF never fires.)
+  if (process.ppid !== INITIAL_PPID) {
+    shutdown()
+    return
+  }
+
   // Check for takeover signal from /lark:takeover skill.
   // The signal file contains the Claude Code PID that requested takeover.
   // Each server.ts checks if the signal matches its own parent process.
@@ -1358,3 +1386,10 @@ const shutdown = () => {
 }
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
+
+// Claude Code talks to this server over stdio. When it exits, our stdin reaches
+// EOF — shut down so we release ws.lock and the WebSocket instead of orphaning
+// the connection. Without this, a dead session's server lingers (reparented to
+// init/systemd) and steals inbound messages from every new session.
+process.stdin.on('end', shutdown)
+process.stdin.on('close', shutdown)
