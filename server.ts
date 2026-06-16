@@ -158,6 +158,7 @@ type Access = {
   pending: Record<string, PendingEntry>
   mentionPatterns?: string[]
   ackReaction?: string
+  doneReaction?: string
   replyToMode?: 'off' | 'first' | 'all'
   textChunkLimit?: number
   chunkMode?: 'length' | 'newline'
@@ -174,6 +175,37 @@ function defaultAccess(): Access {
 
 const MAX_CHUNK_LIMIT = 4000
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+// Tracks "processing" ack reactions awaiting a reply, keyed by chat_id. Each
+// entry is an inbound message that got an ackReaction; when the session replies
+// to that chat we swap the ackReaction for doneReaction (Hermes-style status).
+// Only populated when doneReaction is configured.
+type PendingAck = { messageId: string; reactionId?: string }
+const pendingAcks = new Map<string, PendingAck[]>()
+const MAX_PENDING_PER_CHAT = 50
+
+// Swap each pending "processing" reaction for the "done" reaction on the inbound
+// message(s) this reply answers. Best-effort: failures are swallowed so a
+// reaction hiccup never breaks replying.
+async function finalizeAcks(chatId: string): Promise<void> {
+  const list = pendingAcks.get(chatId)
+  if (!list || list.length === 0) return
+  pendingAcks.delete(chatId)
+  const done = loadAccess().doneReaction
+  if (!done) return
+  for (const item of list) {
+    try {
+      if (item.reactionId) {
+        await larkApi('DELETE', `/im/v1/messages/${item.messageId}/reactions/${item.reactionId}`)
+      }
+      await larkApi('POST', `/im/v1/messages/${item.messageId}/reactions`, {
+        reaction_type: { emoji_type: done },
+      })
+    } catch {
+      // best-effort; leave the message as-is on failure
+    }
+  }
+}
 
 function assertSendable(f: string): void {
   let real, stateReal: string
@@ -198,6 +230,7 @@ function readAccessFile(): Access {
       pending: parsed.pending ?? {},
       mentionPatterns: parsed.mentionPatterns,
       ackReaction: parsed.ackReaction,
+      doneReaction: parsed.doneReaction,
       replyToMode: parsed.replyToMode,
       textChunkLimit: parsed.textChunkLimit,
       chunkMode: parsed.chunkMode,
@@ -927,6 +960,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           }
         }
 
+        // Reply delivered → swap any pending "processing" reactions to "done".
+        if (sentIds.length > 0) void finalizeAcks(chat_id)
+
         const result =
           sentIds.length === 1
             ? `sent (id: ${sentIds[0]})`
@@ -1086,11 +1122,21 @@ async function handleInbound(event: any): Promise<void> {
 
   const access = result.access
 
-  // Ack reaction
+  // Ack reaction — mark the message as "received / processing". When doneReaction
+  // is also configured, remember the reaction_id so the reply can swap it to done.
   if (access.ackReaction && messageId) {
     void larkApi('POST', `/im/v1/messages/${messageId}/reactions`, {
       reaction_type: { emoji_type: access.ackReaction },
-    }).catch(() => {})
+    })
+      .then((res: any) => {
+        if (!access.doneReaction) return
+        const list = pendingAcks.get(chatId) ?? []
+        list.push({ messageId, reactionId: res?.data?.reaction_id })
+        // Cap memory if a chat sends many messages without any reply.
+        if (list.length > MAX_PENDING_PER_CHAT) list.splice(0, list.length - MAX_PENDING_PER_CHAT)
+        pendingAcks.set(chatId, list)
+      })
+      .catch(() => {})
   }
 
   // Determine username

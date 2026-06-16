@@ -114,9 +114,10 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 
 ### `set <key> <value>`
 
-Delivery/UX config. Supported keys: `ackReaction`, `replyToMode`,
+Delivery/UX config. Supported keys: `ackReaction`, `doneReaction`, `replyToMode`,
 `textChunkLimit`, `chunkMode`, `mentionPatterns`. Validate types:
 - `ackReaction`: Lark emoji type name (e.g. THUMBSUP, HEART) or `""` to disable
+- `doneReaction`: Lark emoji type name; swaps `ackReaction`→this on reply (requires `ackReaction`). `""` disables the swap
 - `replyToMode`: `off` | `first` | `all`
 - `textChunkLimit`: number
 - `chunkMode`: `length` | `newline`

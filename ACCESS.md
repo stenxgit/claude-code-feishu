@@ -80,6 +80,13 @@ Configure outbound behavior with `/lark:access set <key> <value>`.
 /lark:access set ackReaction ""
 ```
 
+**`doneReaction`** turns the ack into a status indicator: when set (alongside `ackReaction`), the `ackReaction` shown while a message is being processed is swapped for `doneReaction` as soon as the session replies to that chat — a "processing → done" signal. Requires `ackReaction` to be set. Empty string disables the swap (ack then stays as a plain "seen" mark).
+
+```
+/lark:access set ackReaction OnIt
+/lark:access set doneReaction DONE
+```
+
 **`replyToMode`** controls threading on chunked replies. When a long response is split, `first` (default) threads only the first chunk under the inbound message; `all` threads every chunk; `off` sends all chunks standalone.
 
 **`textChunkLimit`** sets the split threshold. Default is 4000 characters.
