@@ -37,6 +37,7 @@ Read both state files and give the user a complete picture:
    - Allowed senders: count, and list open_id values
    - Pending pairings: count, with codes
    - Group chats opted in: count
+   - Status icons: `ackReaction`/`doneReaction` values (or "off" if unset/empty)
 
 4. **What next** — end with a concrete next step based on state:
    - No credentials → *"Run `/lark:configure <app_id> <app_secret>` with your
@@ -64,7 +65,18 @@ job and should be turned off.
    `LARK_APP_SECRET=`, and `LARK_DOMAIN=` lines, preserve other keys. Write
    back, no quotes. If `LARK_DOMAIN` is already set and no domain arg was
    given, leave it as-is rather than overwriting.
-5. Confirm, then show the no-args status so the user sees where they stand.
+5. **Seed status-icon defaults.** Read `~/.claude/channels/lark/access.json`
+   (if missing, start from `{ "dmPolicy": "pairing", "allowFrom": [],
+   "groups": {}, "pending": {} }`). If the file has **no** `ackReaction` key,
+   add `"ackReaction": "OnIt"`; if it has **no** `doneReaction` key, add
+   `"doneReaction": "DONE"`. **Only add a key when it is absent — never
+   overwrite an existing value** (an empty string `""` is a deliberate
+   "disabled" the user may have set). Write the file back. This gives every
+   fresh install the processing→done status indicator (🏃 on receipt, swapped
+   to ✅ when the session replies) out of the box.
+6. Confirm, then show the no-args status so the user sees where they stand.
+   Mention reactions are on by default and can be changed or disabled with
+   `/lark:access set ackReaction ""` (and `doneReaction`).
 
 ### `domain <domain>` — change API domain only
 
