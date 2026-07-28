@@ -24,6 +24,23 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, 
 import { homedir } from 'os'
 import { join, sep } from 'path'
 
+import { parseEnvFile } from './lib/env.ts'
+import { attachmentFileName, safeFileName } from './lib/attachments.ts'
+import {
+  chunk,
+  extractImageKey,
+  extractTextContent,
+  resolveMentions,
+  type LarkMention,
+} from './lib/text.ts'
+import { defaultAccess, evaluateGate, type Access } from './lib/gate.ts'
+import {
+  buildMarkdownCard,
+  buildPermissionCard,
+  looksLikeMarkdown,
+  type PermissionDetail,
+} from './lib/cards.ts'
+
 // ─── Constants & env ────────────────────────────────────────────────────────
 
 const STATE_DIR = join(homedir(), '.claude', 'channels', 'lark')
@@ -37,9 +54,8 @@ const SESSIONS_DIR = join(STATE_DIR, 'sessions')
 
 // Load ~/.claude/channels/lark/.env into process.env. Real env wins.
 try {
-  for (const line of readFileSync(ENV_FILE, 'utf8').split('\n')) {
-    const m = line.match(/^(\w+)=(.*)$/)
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
+  for (const [key, value] of Object.entries(parseEnvFile(readFileSync(ENV_FILE, 'utf8')))) {
+    if (process.env[key] === undefined) process.env[key] = value
   }
 } catch {}
 
@@ -49,6 +65,11 @@ const APP_SECRET = process.env.LARK_APP_SECRET
 const API_DOMAIN = process.env.LARK_DOMAIN ?? 'open.feishu.cn'
 const API_BASE = `https://${API_DOMAIN}/open-apis`
 const STATIC = process.env.LARK_ACCESS_MODE === 'static'
+
+// Working directory of the Claude Code session this server belongs to. Filled
+// in by registerSession(); shown on permission cards so a user running several
+// sessions can tell which project is asking. Not used for any access decision.
+let sessionCwd = ''
 
 if (!APP_ID || !APP_SECRET) {
   process.stderr.write(
@@ -65,9 +86,11 @@ if (!APP_ID || !APP_SECRET) {
 
 let tenantToken: string | null = null
 let tokenExpiresAt = 0
+// In-flight fetch, shared by concurrent callers. Without this, a burst of
+// tool calls after expiry each mint their own token.
+let tokenInFlight: Promise<string> | null = null
 
-async function getTenantToken(): Promise<string> {
-  if (tenantToken && Date.now() < tokenExpiresAt) return tenantToken
+async function fetchTenantToken(): Promise<string> {
   const res = await fetch(`${API_BASE}/auth/v3/tenant_access_token/internal`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -85,6 +108,16 @@ async function getTenantToken(): Promise<string> {
   return tenantToken
 }
 
+async function getTenantToken(): Promise<string> {
+  if (tenantToken && Date.now() < tokenExpiresAt) return tenantToken
+  if (!tokenInFlight) {
+    tokenInFlight = fetchTenantToken().finally(() => {
+      tokenInFlight = null
+    })
+  }
+  return tokenInFlight
+}
+
 // Validate IDs to prevent injection in URL paths
 function validateId(id: string, label: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
@@ -93,23 +126,55 @@ function validateId(id: string, label: string): string {
   return id
 }
 
+const API_RETRIES = 3
+const API_RETRY_BASE_MS = 400
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+// Lark rate-limits per app (HTTP 429) and occasionally 5xxs. Both are worth a
+// short backoff — a dropped reply is far more visible to the user than a
+// half-second delay. `code` 99991400 is the JSON-level rate-limit signal.
+function isRetryable(status: number, code?: number): boolean {
+  return status === 429 || status >= 500 || code === 99991400
+}
+
 async function larkApi(method: string, path: string, body?: unknown): Promise<any> {
-  const token = await getTenantToken()
-  const opts: RequestInit = {
-    method,
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+  let lastError: Error | undefined
+  for (let attempt = 0; attempt < API_RETRIES; attempt++) {
+    if (attempt > 0) await sleep(API_RETRY_BASE_MS * 2 ** (attempt - 1))
+    const token = await getTenantToken()
+    const opts: RequestInit = {
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    }
+    if (body) opts.body = JSON.stringify(body)
+    const res = await fetch(`${API_BASE}${path}`, opts)
+
+    if (!res.ok) {
+      // Read the body — Lark puts the actual reason there, and "HTTP 400" on
+      // its own has cost plenty of debugging time.
+      const detail = (await res.text().catch(() => '')).slice(0, 500)
+      lastError = new Error(
+        `Lark API ${method} ${path}: HTTP ${res.status}${detail ? ` ${detail}` : ''}`,
+      )
+      if (isRetryable(res.status)) continue
+      throw lastError
+    }
+
+    const data = (await res.json()) as any
+    if (data.code !== undefined && data.code !== 0) {
+      lastError = new Error(
+        `Lark API ${method} ${path}: code=${data.code} msg=${data.msg ?? 'unknown'}`,
+      )
+      if (isRetryable(res.status, data.code)) continue
+      throw lastError
+    }
+    return data
   }
-  if (body) opts.body = JSON.stringify(body)
-  const res = await fetch(`${API_BASE}${path}`, opts)
-  if (!res.ok) throw new Error(`Lark API ${method} ${path}: HTTP ${res.status}`)
-  const data = (await res.json()) as any
-  if (data.code !== undefined && data.code !== 0) {
-    throw new Error(`Lark API ${method} ${path}: code=${data.code} msg=${data.msg ?? 'unknown'}`)
-  }
-  return data
+  throw lastError ?? new Error(`Lark API ${method} ${path}: exhausted retries`)
 }
 
 async function larkApiRaw(method: string, path: string): Promise<Response> {
@@ -118,6 +183,21 @@ async function larkApiRaw(method: string, path: string): Promise<Response> {
     method,
     headers: { 'Authorization': `Bearer ${token}` },
   })
+}
+
+/** Send a message and return its message_id (empty string when Lark omits it). */
+async function sendMessage(chatId: string, msgType: string, content: unknown): Promise<string> {
+  const data = await larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
+    receive_id: chatId,
+    msg_type: msgType,
+    content: JSON.stringify(content),
+  })
+  return data.data?.message_id ?? ''
+}
+
+/** Replace the content of a previously sent interactive card. */
+async function patchCard(messageId: string, card: unknown): Promise<void> {
+  await larkApi('PATCH', `/im/v1/messages/${messageId}`, { content: JSON.stringify(card) })
 }
 
 // Bot info — cached at startup
@@ -137,41 +217,6 @@ async function fetchBotInfo(): Promise<void> {
 }
 
 // ─── Access control ─────────────────────────────────────────────────────────
-
-type PendingEntry = {
-  senderId: string
-  chatId: string
-  createdAt: number
-  expiresAt: number
-  replies: number
-}
-
-type GroupPolicy = {
-  requireMention: boolean
-  allowFrom: string[]
-}
-
-type Access = {
-  dmPolicy: 'pairing' | 'allowlist' | 'disabled'
-  allowFrom: string[]
-  groups: Record<string, GroupPolicy>
-  pending: Record<string, PendingEntry>
-  mentionPatterns?: string[]
-  ackReaction?: string
-  doneReaction?: string
-  replyToMode?: 'off' | 'first' | 'all'
-  textChunkLimit?: number
-  chunkMode?: 'length' | 'newline'
-}
-
-function defaultAccess(): Access {
-  return {
-    dmPolicy: 'pairing',
-    allowFrom: [],
-    groups: {},
-    pending: {},
-  }
-}
 
 const MAX_CHUNK_LIMIT = 4000
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -232,6 +277,7 @@ function readAccessFile(): Access {
       ackReaction: parsed.ackReaction,
       doneReaction: parsed.doneReaction,
       replyToMode: parsed.replyToMode,
+      replyFormat: parsed.replyFormat,
       textChunkLimit: parsed.textChunkLimit,
       chunkMode: parsed.chunkMode,
     }
@@ -269,98 +315,38 @@ function saveAccess(a: Access): void {
   renameSync(tmp, ACCESS_FILE)
 }
 
-function pruneExpired(a: Access): boolean {
-  const now = Date.now()
-  let changed = false
-  for (const [code, p] of Object.entries(a.pending)) {
-    if (p.expiresAt < now) {
-      delete a.pending[code]
-      changed = true
-    }
-  }
-  return changed
-}
-
 type GateResult =
   | { action: 'deliver'; access: Access }
   | { action: 'drop' }
   | { action: 'pair'; code: string; isResend: boolean; chatId: string }
 
-function gate(senderId: string, chatId: string, chatType: string, text: string, mentions?: LarkMention[]): GateResult {
+function gate(
+  senderId: string,
+  chatId: string,
+  chatType: string,
+  text: string,
+  mentions?: LarkMention[],
+): GateResult {
   const access = loadAccess()
-  const pruned = pruneExpired(access)
-  if (pruned) saveAccess(access)
-
-  if (access.dmPolicy === 'disabled') return { action: 'drop' }
-
-  if (chatType === 'p2p') {
-    if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
-    if (access.dmPolicy === 'allowlist') return { action: 'drop' }
-
-    // pairing mode — check for existing non-expired code for this sender
-    for (const [code, p] of Object.entries(access.pending)) {
-      if (p.senderId === senderId) {
-        if ((p.replies ?? 1) >= 2) return { action: 'drop' }
-        p.replies = (p.replies ?? 1) + 1
-        saveAccess(access)
-        return { action: 'pair', code, isResend: true, chatId }
-      }
-    }
-    // Cap pending at 3
-    if (Object.keys(access.pending).length >= 3) return { action: 'drop' }
-
-    const code = randomBytes(3).toString('hex')
-    const now = Date.now()
-    access.pending[code] = {
-      senderId,
-      chatId,
-      createdAt: now,
-      expiresAt: now + 60 * 60 * 1000, // 1h
-      replies: 1,
-    }
-    saveAccess(access)
-    return { action: 'pair', code, isResend: false, chatId }
-  }
-
-  // Group chat
-  if (chatType === 'group') {
-    const policy = access.groups[chatId]
-    if (!policy) return { action: 'drop' }
-    const groupAllowFrom = policy.allowFrom ?? []
-    const requireMention = policy.requireMention ?? true
-    if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
-      return { action: 'drop' }
-    }
-    if (requireMention && !isMentioned(text, mentions, access.mentionPatterns)) {
-      return { action: 'drop' }
-    }
-    return { action: 'deliver', access }
-  }
-
-  return { action: 'drop' }
+  const { decision, changed } = evaluateGate(access, {
+    senderId,
+    chatId,
+    chatType,
+    text,
+    mentions,
+    botOpenId,
+    now: Date.now(),
+    newCode: () => randomBytes(3).toString('hex'),
+  })
+  if (changed) saveAccess(access)
+  return decision.action === 'deliver' ? { action: 'deliver', access } : decision
 }
 
-type LarkMention = {
-  key: string
-  id: { open_id?: string; user_id?: string; union_id?: string }
-  name: string
-}
+// Poll for approved pairings. Sends are async and the poll runs every 5s, so
+// track what's already in flight — otherwise a slow send gets the same file
+// picked up again and the user receives "Paired!" twice.
+const approvalsInFlight = new Set<string>()
 
-function isMentioned(text: string, mentions?: LarkMention[], extraPatterns?: string[]): boolean {
-  if (mentions) {
-    for (const m of mentions) {
-      if (m.id.open_id === botOpenId) return true
-    }
-  }
-  for (const pat of extraPatterns ?? []) {
-    try {
-      if (new RegExp(pat, 'i').test(text)) return true
-    } catch {}
-  }
-  return false
-}
-
-// Poll for approved pairings
 function checkApprovals(): void {
   let files: string[]
   try {
@@ -369,6 +355,7 @@ function checkApprovals(): void {
   if (files.length === 0) return
 
   for (const senderId of files) {
+    if (approvalsInFlight.has(senderId)) continue
     const file = join(APPROVED_DIR, senderId)
     let chatId: string
     try {
@@ -382,44 +369,21 @@ function checkApprovals(): void {
       continue
     }
 
+    approvalsInFlight.add(senderId)
     void (async () => {
       try {
-        await larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
-          receive_id: chatId,
-          msg_type: 'text',
-          content: JSON.stringify({ text: 'Paired! Say hi to Claude.' }),
-        })
-        rmSync(file, { force: true })
+        await sendMessage(chatId, 'text', { text: 'Paired! Say hi to Claude.' })
       } catch (err) {
         process.stderr.write(`lark channel: failed to send approval confirm: ${err}\n`)
+      } finally {
         rmSync(file, { force: true })
+        approvalsInFlight.delete(senderId)
       }
     })()
   }
 }
 
 if (!STATIC) setInterval(checkApprovals, 5000)
-
-// ─── Text chunking ──────────────────────────────────────────────────────────
-
-function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[] {
-  if (text.length <= limit) return [text]
-  const out: string[] = []
-  let rest = text
-  while (rest.length > limit) {
-    let cut = limit
-    if (mode === 'newline') {
-      const para = rest.lastIndexOf('\n\n', limit)
-      const line = rest.lastIndexOf('\n', limit)
-      const space = rest.lastIndexOf(' ', limit)
-      cut = para > limit / 2 ? para : line > limit / 2 ? line : space > 0 ? space : limit
-    }
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
-}
 
 // ─── Outbound gate ──────────────────────────────────────────────────────────
 
@@ -459,132 +423,30 @@ function recordChatMapping(chatId: string, openId: string): void {
   saveChatMapping(m)
 }
 
-// ─── Message content extraction ─────────────────────────────────────────────
-
-function extractTextContent(msgType: string, contentStr: string): string {
-  try {
-    const content = JSON.parse(contentStr)
-    switch (msgType) {
-      case 'text':
-        return content.text ?? ''
-      case 'post': {
-        // Rich text: { title, content: [[{tag,text}, ...], ...] }
-        const title = content.title ?? ''
-        const body = (content.content as any[][] ?? [])
-          .map((para: any[]) =>
-            para.map((node: any) => {
-              if (node.tag === 'text') return node.text ?? ''
-              if (node.tag === 'a') return `[${node.text ?? ''}](${node.href ?? ''})`
-              if (node.tag === 'at') return `@${node.user_name ?? node.user_id ?? ''}`
-              if (node.tag === 'img') return '(image)'
-              return ''
-            }).join('')
-          ).join('\n')
-        return title ? `${title}\n${body}` : body
-      }
-      case 'image':
-        return '(image)'
-      case 'file':
-        return `(file: ${content.file_name ?? 'unknown'})`
-      case 'audio':
-        return '(audio)'
-      case 'media':
-        return '(video)'
-      case 'sticker':
-        return '(sticker)'
-      case 'interactive': {
-        // Card message: extract title + text elements
-        const cardTitle = content.title ?? content.header?.title?.content ?? ''
-        const cardElements = content.elements as any[][] | undefined
-        const cardBody = cardElements
-          ? cardElements
-              .map((row: any[]) =>
-                row
-                  .filter((node: any) => node.tag === 'text')
-                  .map((node: any) => node.text ?? '')
-                  .join('')
-              )
-              .filter(Boolean)
-              .join('\n')
-          : ''
-        return cardTitle ? `${cardTitle}\n${cardBody}` : cardBody || '(card message)'
-      }
-      case 'merge_forward':
-        return '(forwarded messages)'
-      case 'share_chat':
-        return `(shared group: ${content.chat_id ?? 'unknown'})`
-      case 'share_user':
-        return `(shared user: ${content.user_id ?? 'unknown'})`
-      case 'system': {
-        const tpl = content.template ?? ''
-        return `(system: ${tpl || 'notification'})`
-      }
-      case 'location':
-        return `(location: ${content.name ?? ''} lat:${content.latitude ?? ''} lon:${content.longitude ?? ''})`
-      case 'todo': {
-        let todoTitle = content.summary?.title ?? ''
-        if (!todoTitle && content.summary?.content) {
-          todoTitle = (content.summary.content as any[][])
-            .flat()
-            .filter((n: any) => n.tag === 'text')
-            .map((n: any) => n.text ?? '')
-            .join('')
-        }
-        return `(todo: ${todoTitle || (content.task_id ?? 'task')})`
-      }
-      case 'vote':
-        return `(vote: ${content.topic ?? 'poll'})`
-      case 'hongbao':
-        return `(hongbao: ${content.text ?? 'red envelope'})`
-      case 'share_calendar_event':
-      case 'calendar':
-      case 'general_calendar':
-        return `(calendar: ${content.summary ?? 'event'})`
-      case 'video_chat':
-        return `(video chat: ${content.topic ?? ''})`
-      case 'folder':
-        return `(shared folder: ${content.file_name ?? ''})`
-      default:
-        return `(${msgType})`
-    }
-  } catch {
-    return contentStr
-  }
-}
-
-// Safe attachment/file name
-function safeFileName(name: string): string {
-  return name.replace(/[\[\]\r\n;]/g, '_')
-}
-
-// Extract image_key from message content (works for both 'image' and 'post' types)
-function extractImageKey(msgType: string, contentStr: string): string | undefined {
-  try {
-    const content = JSON.parse(contentStr)
-    if (msgType === 'image') return content.image_key
-    if (msgType === 'post' && content.content) {
-      for (const para of content.content as any[][]) {
-        for (const node of para) {
-          if (node.tag === 'img' && node.image_key) return node.image_key
-        }
-      }
-    }
-  } catch {}
-  return undefined
-}
-
 // ─── File download ──────────────────────────────────────────────────────────
 
 async function downloadFile(messageId: string, fileKey: string, type: 'file' | 'image', fileName?: string): Promise<string> {
-  const res = await larkApiRaw('GET', `/im/v1/messages/${messageId}/resources/${fileKey}?type=${type}`)
-  if (!res.ok) throw new Error(`download failed: ${res.status}`)
+  const res = await larkApiRaw(
+    'GET',
+    `/im/v1/messages/${messageId}/resources/${encodeURIComponent(fileKey)}?type=${type}`,
+  )
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
+
+  // Refuse oversized payloads before buffering the whole body when the server
+  // tells us the size up front.
+  const declared = Number(res.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`file too large: ${(declared / 1024 / 1024).toFixed(1)}MB, max 25MB`)
+  }
   const buf = Buffer.from(await res.arrayBuffer())
   if (buf.length > MAX_ATTACHMENT_BYTES) {
     throw new Error(`file too large: ${(buf.length / 1024 / 1024).toFixed(1)}MB, max 25MB`)
   }
-  const ext = fileName?.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : (type === 'image' ? '.png' : '.bin')
-  const safeName = `${Date.now()}-${fileKey}${ext}`
-  const path = join(INBOX_DIR, safeName)
+
+  // fileKey and fileName both come from the message body — i.e. from whoever
+  // sent the bot a file. attachmentFileName reduces them to a bare basename so
+  // a crafted name like `x.../../../.bashrc` cannot escape the inbox.
+  const path = join(INBOX_DIR, attachmentFileName(Date.now(), fileKey, type, fileName))
   mkdirSync(INBOX_DIR, { recursive: true })
   writeFileSync(path, buf)
   return path
@@ -592,39 +454,46 @@ async function downloadFile(messageId: string, fileKey: string, type: 'file' | '
 
 // ─── File upload ────────────────────────────────────────────────────────────
 
-async function uploadFile(filePath: string, fileType: 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream'): Promise<string> {
+// Multipart uploads bypass larkApi (which is JSON-only), so they need their
+// own error handling. These used to swallow every failure and return '', which
+// the caller read as "nothing to send" — the attachment silently vanished.
+async function uploadMultipart(path: string, form: FormData, field: string): Promise<string> {
   const token = await getTenantToken()
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+    body: form,
+  })
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300)
+    throw new Error(`upload failed: HTTP ${res.status}${detail ? ` ${detail}` : ''}`)
+  }
+  const data = (await res.json()) as any
+  if (data.code !== undefined && data.code !== 0) {
+    throw new Error(`upload failed: code=${data.code} msg=${data.msg ?? 'unknown'}`)
+  }
+  const key = data.data?.[field]
+  if (!key) throw new Error(`upload failed: response had no ${field}`)
+  return key as string
+}
+
+async function uploadFile(filePath: string, fileType: 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream'): Promise<string> {
   const fileData = readFileSync(filePath)
   const fileName = filePath.split('/').pop() ?? 'file'
   const formData = new FormData()
   formData.append('file_type', fileType)
   formData.append('file_name', fileName)
   formData.append('file', new Blob([fileData]), fileName)
-
-  const res = await fetch(`${API_BASE}/im/v1/files`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData,
-  })
-  const data = (await res.json()) as any
-  return data.data?.file_key ?? ''
+  return uploadMultipart('/im/v1/files', formData, 'file_key')
 }
 
 async function uploadImage(filePath: string): Promise<string> {
-  const token = await getTenantToken()
   const fileData = readFileSync(filePath)
   const fileName = filePath.split('/').pop() ?? 'image.png'
   const formData = new FormData()
   formData.append('image_type', 'message')
   formData.append('image', new Blob([fileData]), fileName)
-
-  const res = await fetch(`${API_BASE}/im/v1/images`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData,
-  })
-  const data = (await res.json()) as any
-  return data.data?.image_key ?? ''
+  return uploadMultipart('/im/v1/images', formData, 'image_key')
 }
 
 // ─── MCP server ─────────────────────────────────────────────────────────────
@@ -654,57 +523,64 @@ const mcp = new Server(
 // card to allowlisted DMs with Allow / Deny buttons. Mirrors the Telegram
 // plugin's permission flow, but uses Feishu interactive cards instead of text.
 
-// Cached request details, keyed by request_id, for the "See more" expansion.
-const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+// How long a request stays actionable before its cards are marked stale. The
+// waiting Claude Code session has its own timeout; this only keeps the map
+// bounded and stops abandoned cards from looking live forever.
+const PERMISSION_TTL_MS = 15 * 60 * 1000
+const PERMISSION_SWEEP_MS = 60 * 1000
 
-// Build a Feishu interactive card for a permission request.
-// expanded=false → compact card with [See more] [Allow] [Deny].
-// expanded=true  → shows description + input_preview; outcome (if set) replaces buttons.
-function buildPermCard(
+type PendingPermission = {
+  detail: PermissionDetail
+  createdAt: number
+  /** Cards sent for this request: message_id per recipient chat. */
+  cards: Array<{ chatId: string; messageId: string }>
+  /** Set once a verdict has been relayed — makes the decision idempotent. */
+  resolved?: 'allow' | 'deny' | 'expired'
+}
+
+const pendingPermissions = new Map<string, PendingPermission>()
+
+function permissionOutcomeLabel(outcome: 'allow' | 'deny' | 'expired'): string {
+  if (outcome === 'allow') return '✅ 已允许'
+  if (outcome === 'deny') return '❌ 已拒绝'
+  return '⏳ 已超时，请回到终端处理'
+}
+
+// Refresh every card we sent for a request except the one the tapper is on
+// (that one is updated by the callback's return value). Without this, a second
+// approver still sees live buttons on an already-decided request.
+async function syncPermissionCards(
   requestId: string,
-  toolName: string,
-  expanded: boolean,
-  detail?: { description: string; input_preview: string },
-  outcome?: string,
-): any {
-  const elements: any[] = []
-  if (expanded && detail) {
-    let pretty: string
-    try { pretty = JSON.stringify(JSON.parse(detail.input_preview), null, 2) }
-    catch { pretty = detail.input_preview }
-    if (detail.description) {
-      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `**说明**: ${detail.description}` } })
+  entry: PendingPermission,
+  outcome: 'allow' | 'deny' | 'expired',
+  skipMessageId?: string,
+): Promise<void> {
+  const card = buildPermissionCard(requestId, entry.detail, {
+    expanded: true,
+    outcome: permissionOutcomeLabel(outcome),
+  })
+  for (const sent of entry.cards) {
+    if (sent.messageId === skipMessageId) continue
+    try {
+      await patchCard(sent.messageId, card)
+    } catch (err) {
+      process.stderr.write(`lark channel: failed to update permission card ${sent.messageId}: ${err}\n`)
     }
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: '```\n' + pretty + '\n```' } })
-  }
-  if (outcome) {
-    elements.push({ tag: 'div', text: { tag: 'lark_md', content: outcome } })
-  } else {
-    const actions: any[] = []
-    if (!expanded) {
-      actions.push({
-        tag: 'button', text: { tag: 'plain_text', content: '查看详情' },
-        type: 'default', value: { action: 'more', request_id: requestId },
-      })
-    }
-    actions.push({
-      tag: 'button', text: { tag: 'plain_text', content: '✅ 允许' },
-      type: 'primary', value: { action: 'allow', request_id: requestId },
-    })
-    actions.push({
-      tag: 'button', text: { tag: 'plain_text', content: '❌ 拒绝' },
-      type: 'danger', value: { action: 'deny', request_id: requestId },
-    })
-    elements.push({ tag: 'action', actions })
-  }
-  return {
-    // update_multi: true is required for the card to be updatable by the
-    // card.action.trigger callback response (verified via spike 2026-06-16).
-    config: { wide_screen_mode: true, update_multi: true },
-    header: { title: { tag: 'plain_text', content: `🔐 权限请求：${toolName}` }, template: 'orange' },
-    elements,
   }
 }
+
+function sweepPermissions(): void {
+  const cutoff = Date.now() - PERMISSION_TTL_MS
+  for (const [requestId, entry] of pendingPermissions) {
+    if (entry.createdAt > cutoff) continue
+    pendingPermissions.delete(requestId)
+    if (!entry.resolved) {
+      void syncPermissionCards(requestId, entry, 'expired')
+    }
+  }
+}
+
+setInterval(sweepPermissions, PERMISSION_SWEEP_MS).unref?.()
 
 // Receive permission_request from Claude Code → push a card to every
 // allowlisted DM. Groups are intentionally excluded — only explicitly paired
@@ -721,31 +597,47 @@ mcp.setNotificationHandler(
   }),
   async ({ params }) => {
     const { request_id, tool_name, description, input_preview } = params
-    pendingPermissions.set(request_id, { tool_name, description, input_preview })
+    const detail: PermissionDetail = {
+      toolName: tool_name,
+      description,
+      inputPreview: input_preview,
+      cwd: sessionCwd,
+    }
+    const entry: PendingPermission = { detail, createdAt: Date.now(), cards: [] }
+    pendingPermissions.set(request_id, entry)
+
     const access = loadAccess()
     const mapping = loadChatMapping()
-    const card = buildPermCard(request_id, tool_name, false)
-    for (const openId of access.allowFrom) {
-      const chatId = mapping.openToChat[openId]
-      if (!chatId) continue
-      void larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
-        receive_id: chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(card),
-      }).catch(e => process.stderr.write(`lark channel: permission card send to ${chatId} failed: ${e}\n`))
+    const card = buildPermissionCard(request_id, detail)
+    await Promise.all(
+      access.allowFrom.map(async openId => {
+        const chatId = mapping.openToChat[openId]
+        if (!chatId) return
+        try {
+          const messageId = await sendMessage(chatId, 'interactive', card)
+          if (messageId) entry.cards.push({ chatId, messageId })
+        } catch (err) {
+          process.stderr.write(`lark channel: permission card send to ${chatId} failed: ${err}\n`)
+        }
+      }),
+    )
+    if (entry.cards.length === 0) {
+      process.stderr.write(
+        `lark channel: permission request ${request_id} reached nobody — ` +
+        `no allowlisted DM has a known chat_id yet (send the bot a DM first)\n`,
+      )
     }
   },
 )
 
 // Handle a card button tap (card.action.trigger). The handler's return value
 // is sent back over the long connection to update the card / show a toast.
-// Field names follow the Feishu card-callback payload; adjust if the live
-// payload differs (verified during end-to-end testing).
 async function handleCardAction(data: any): Promise<any> {
   const openId = data?.operator?.open_id ?? data?.open_id ?? ''
   const value = data?.action?.value ?? {}
   const action = value.action as string | undefined
   const requestId = value.request_id as string | undefined
+  const messageId = data?.context?.open_message_id ?? data?.open_message_id ?? ''
   if (!action || !requestId) return {}
 
   // Only allowlisted DM senders may approve.
@@ -754,38 +646,53 @@ async function handleCardAction(data: any): Promise<any> {
     return { toast: { type: 'error', content: '无权限' } }
   }
 
+  const entry = pendingPermissions.get(requestId)
+  if (!entry) return { toast: { type: 'warning', content: '该请求已失效' } }
+
   if (action === 'more') {
-    const d = pendingPermissions.get(requestId)
-    if (!d) return { toast: { type: 'warning', content: '详情已过期' } }
     return {
       card: {
         type: 'raw',
-        data: buildPermCard(requestId, d.tool_name, true, { description: d.description, input_preview: d.input_preview }),
+        data: buildPermissionCard(requestId, entry.detail, {
+          expanded: true,
+          outcome: entry.resolved ? permissionOutcomeLabel(entry.resolved) : undefined,
+        }),
       },
     }
   }
 
-  if (action === 'allow' || action === 'deny') {
-    void mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: { request_id: requestId, behavior: action },
-    })
-    const d = pendingPermissions.get(requestId)
-    pendingPermissions.delete(requestId)
-    const outcome = action === 'allow' ? '✅ 已允许' : '❌ 已拒绝'
+  if (action !== 'allow' && action !== 'deny') return {}
+
+  // First tap wins. A second tap (from another approver, or a double-tap)
+  // must not send a second verdict to the waiting session.
+  if (entry.resolved) {
     return {
-      toast: { type: 'success', content: outcome },
+      toast: { type: 'warning', content: `已由他人处理：${permissionOutcomeLabel(entry.resolved)}` },
       card: {
         type: 'raw',
-        data: buildPermCard(
-          requestId, d?.tool_name ?? '', true,
-          d ? { description: d.description, input_preview: d.input_preview } : undefined,
-          outcome,
-        ),
+        data: buildPermissionCard(requestId, entry.detail, {
+          expanded: true,
+          outcome: permissionOutcomeLabel(entry.resolved),
+        }),
       },
     }
   }
-  return {}
+
+  entry.resolved = action
+  void mcp.notification({
+    method: 'notifications/claude/channel/permission',
+    params: { request_id: requestId, behavior: action },
+  })
+  void syncPermissionCards(requestId, entry, action, messageId)
+
+  const outcome = permissionOutcomeLabel(action)
+  return {
+    toast: { type: 'success', content: outcome },
+    card: {
+      type: 'raw',
+      data: buildPermissionCard(requestId, entry.detail, { expanded: true, outcome }),
+    },
+  }
 }
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -896,30 +803,42 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
         const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
+        // Lark plain-text messages render markdown literally. When replyFormat
+        // is `card`, wrap markdown-looking text in a card so headings, lists and
+        // code fences actually render. Plain prose still goes as text — a card
+        // around "ok, done" is just noise.
+        const asCard = (access.replyFormat ?? 'text') === 'card' && looksLikeMarkdown(text)
         const chunks = chunk(text, limit, mode)
         const sentIds: string[] = []
+
+        // Send one chunk, falling back to plain text if the card is rejected
+        // (bad markdown, oversized payload, card feature unavailable).
+        const sendChunk = async (body: string, threadUnder?: string): Promise<string> => {
+          const post = async (msgType: string, content: unknown): Promise<string> => {
+            if (threadUnder) {
+              const data = await larkApi('POST', `/im/v1/messages/${threadUnder}/reply`, {
+                msg_type: msgType,
+                content: JSON.stringify(content),
+              })
+              return data.data?.message_id ?? ''
+            }
+            return sendMessage(chat_id, msgType, content)
+          }
+          if (asCard) {
+            try {
+              return await post('interactive', buildMarkdownCard(body))
+            } catch (err) {
+              process.stderr.write(`lark channel: card reply failed, falling back to text: ${err}\n`)
+            }
+          }
+          return post('text', { text: body })
+        }
 
         try {
           for (let i = 0; i < chunks.length; i++) {
             const shouldReplyTo =
-              reply_to != null &&
-              replyMode !== 'off' &&
-              (replyMode === 'all' || i === 0)
-
-            let data: any
-            if (shouldReplyTo) {
-              data = await larkApi('POST', `/im/v1/messages/${reply_to}/reply`, {
-                msg_type: 'text',
-                content: JSON.stringify({ text: chunks[i] }),
-              })
-            } else {
-              data = await larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
-                receive_id: chat_id,
-                msg_type: 'text',
-                content: JSON.stringify({ text: chunks[i] }),
-              })
-            }
-            const msgId = data.data?.message_id
+              reply_to != null && replyMode !== 'off' && (replyMode === 'all' || i === 0)
+            const msgId = await sendChunk(chunks[i], shouldReplyTo ? reply_to : undefined)
             if (msgId) sentIds.push(msgId)
           }
         } catch (err) {
@@ -927,46 +846,48 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           throw new Error(`reply failed after ${sentIds.length} of ${chunks.length} chunk(s) sent: ${msg}`)
         }
 
-        // Send files as separate messages
+        // Send files as separate messages. Failures are collected rather than
+        // swallowed — reporting "sent" for an attachment that never arrived
+        // leaves the assistant believing the user has a file they don't.
+        const fileErrors: string[] = []
         for (const f of files) {
           const ext = f.includes('.') ? f.slice(f.lastIndexOf('.')).toLowerCase() : ''
           try {
             if (IMAGE_EXTS.has(ext)) {
               const imageKey = await uploadImage(f)
-              if (imageKey) {
-                const data = await larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
-                  receive_id: chat_id,
-                  msg_type: 'image',
-                  content: JSON.stringify({ image_key: imageKey }),
-                })
-                const msgId = data.data?.message_id
-                if (msgId) sentIds.push(msgId)
-              }
+              sentIds.push(await sendMessage(chat_id, 'image', { image_key: imageKey }))
             } else {
               const fileKey = await uploadFile(f, 'stream')
-              if (fileKey) {
-                const fileName = f.split('/').pop() ?? 'file'
-                const data = await larkApi('POST', '/im/v1/messages?receive_id_type=chat_id', {
-                  receive_id: chat_id,
-                  msg_type: 'file',
-                  content: JSON.stringify({ file_key: fileKey }),
-                })
-                const msgId = data.data?.message_id
-                if (msgId) sentIds.push(msgId)
-              }
+              sentIds.push(await sendMessage(chat_id, 'file', { file_key: fileKey }))
             }
           } catch (err) {
-            process.stderr.write(`lark channel: file send failed for ${f}: ${err}\n`)
+            const msg = err instanceof Error ? err.message : String(err)
+            process.stderr.write(`lark channel: file send failed for ${f}: ${msg}\n`)
+            fileErrors.push(`${safeFileName(f.split('/').pop() ?? f)}: ${msg}`)
           }
         }
 
         // Reply delivered → swap any pending "processing" reactions to "done".
         if (sentIds.length > 0) void finalizeAcks(chat_id)
 
+        const delivered = sentIds.filter(Boolean)
         const result =
-          sentIds.length === 1
-            ? `sent (id: ${sentIds[0]})`
-            : `sent ${sentIds.length} parts (ids: ${sentIds.join(', ')})`
+          delivered.length === 1
+            ? `sent (id: ${delivered[0]})`
+            : `sent ${delivered.length} parts (ids: ${delivered.join(', ')})`
+        if (fileErrors.length > 0) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `${result}\n${fileErrors.length} attachment(s) FAILED to send — the ` +
+                  `recipient did not receive them:\n  ${fileErrors.join('\n  ')}`,
+              },
+            ],
+            isError: true,
+          }
+        }
         return { content: [{ type: 'text', text: result }] }
       }
 
@@ -1014,10 +935,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const message_id = validateId(args.message_id as string, 'message_id')
         const text = args.text as string
         assertAllowedChat(chat_id)
-        await larkApi('PUT', `/im/v1/messages/${message_id}`, {
-          msg_type: 'text',
-          content: JSON.stringify({ text }),
-        })
+        // Lark splits editing across two endpoints: PUT edits text/post
+        // messages, PATCH updates interactive cards. We don't track which kind
+        // a message was, so try the text edit and fall back to a card update.
+        try {
+          await larkApi('PUT', `/im/v1/messages/${message_id}`, {
+            msg_type: 'text',
+            content: JSON.stringify({ text }),
+          })
+        } catch (err) {
+          await patchCard(message_id, buildMarkdownCard(text)).catch(() => {
+            throw err
+          })
+        }
         return { content: [{ type: 'text', text: `edited (id: ${message_id})` }] }
       }
 
@@ -1067,16 +997,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
     }
   }
 })
-
-// Replace @_user_N placeholders with actual names from mentions array
-function resolveMentions(text: string, mentions?: LarkMention[]): string {
-  if (!mentions || mentions.length === 0) return text
-  let resolved = text
-  for (const m of mentions) {
-    resolved = resolved.replaceAll(m.key, `@${m.name}`)
-  }
-  return resolved
-}
 
 // ─── Inbound message handling ───────────────────────────────────────────────
 
@@ -1249,10 +1169,11 @@ function getClaudeCwd(): string {
 
 function registerSession(): void {
   mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 })
+  sessionCwd = getClaudeCwd()
   const info: SessionInfo = {
     pid: process.pid,
     ppid: process.ppid,
-    cwd: getClaudeCwd(),
+    cwd: sessionCwd,
     startedAt: Date.now(),
   }
   writeFileSync(join(SESSIONS_DIR, `${process.pid}.json`), JSON.stringify(info, null, 2) + '\n', { mode: 0o600 })
@@ -1262,23 +1183,22 @@ function unregisterSession(): void {
   try { rmSync(join(SESSIONS_DIR, `${process.pid}.json`), { force: true }) } catch {}
 }
 
-function listSessions(): SessionInfo[] {
+// Sweep registry entries whose process is gone. The /lark:takeover skill reads
+// the directory directly, so it benefits from someone doing this on startup.
+function pruneDeadSessions(): void {
+  let files: string[]
   try {
-    const files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'))
-    const sessions: SessionInfo[] = []
-    for (const f of files) {
-      try {
-        const info: SessionInfo = JSON.parse(readFileSync(join(SESSIONS_DIR, f), 'utf8'))
-        if (isProcessAlive(info.pid)) {
-          sessions.push(info)
-        } else {
-          // Dead session — clean up
-          rmSync(join(SESSIONS_DIR, f), { force: true })
-        }
-      } catch { rmSync(join(SESSIONS_DIR, f), { force: true }) }
+    files = readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'))
+  } catch { return }
+  for (const f of files) {
+    const path = join(SESSIONS_DIR, f)
+    try {
+      const info: SessionInfo = JSON.parse(readFileSync(path, 'utf8'))
+      if (!isProcessAlive(info.pid)) rmSync(path, { force: true })
+    } catch {
+      rmSync(path, { force: true })
     }
-    return sessions
-  } catch { return [] }
+  }
 }
 
 function acquireLock(): boolean {
@@ -1294,6 +1214,7 @@ function acquireLock(): boolean {
 
 await mcp.connect(new StdioServerTransport())
 await fetchBotInfo()
+pruneDeadSessions()
 registerSession()
 
 const larkDomain = API_DOMAIN === 'open.feishu.cn'
@@ -1306,10 +1227,15 @@ const larkDomain = API_DOMAIN === 'open.feishu.cn'
 // MCP logs, so nothing is lost. Both EventDispatcher and WSClient construct
 // their own logger, so both must be given this one. LoggerProxy passes each
 // call's args as a single array, hence the .flat().
+// (process.stderr.write returns a boolean; the SDK's Logger expects void, so
+// each method has an explicit block body rather than a concise arrow.)
+const logToStderr = (...m: any[]): void => {
+  process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`)
+}
 const stderrLogger = {
-  error: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
-  warn: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
-  info: (...m: any[]) => process.stderr.write(`[lark-sdk] ${m.flat().join(' ')}\n`),
+  error: logToStderr,
+  warn: logToStderr,
+  info: logToStderr,
   debug: () => {},
   trace: () => {},
 }
