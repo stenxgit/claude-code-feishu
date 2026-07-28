@@ -221,6 +221,31 @@ ps aux | grep "bun.*server.ts" | grep -v grep
 kill <pid>
 ```
 
+## 升级
+
+已安装的插件锁定在你安装时的版本——本仓库有了新提交,不会自动到达已有安装。要拉取新版本:
+
+```bash
+claude plugin marketplace update claude-code-feishu
+claude plugin update lark@claude-code-feishu
+```
+
+然后 **重启 Claude Code 会话**(照旧带上 `--dangerously-load-development-channels`)。更新不会作用于正在运行的会话。
+
+如果新行为仍然没出现,清掉插件缓存再重启一次:
+
+```bash
+rm -rf ~/.claude/plugins/cache/claude-code-feishu/
+```
+
+**新增配置项不会追溯启用。** `/lark:configure` 只在 `access.json` 里**缺少**某个键时才写入投递默认值(`ackReaction`、`doneReaction`、`replyFormat`),绝不覆盖你已有的值。这保证升级不会在你不知情的情况下改变行为——但也意味着你首次配置之后才引入的设置项会一直处于关闭状态,直到你手动打开。查看当前状态:
+
+```
+/lark:configure
+```
+
+其中显示为未设置的项,都可以用 `/lark:access set <key> <value>` 开启。最典型的是:在 `replyFormat` 出现之前创建的安装会一直用纯文本回复,直到你执行 `/lark:access set replyFormat card`。
+
 ## 开发
 
 ### 目录结构
@@ -250,13 +275,13 @@ CI 会在每次 push 和 PR 上跑这两项。
 
 ### 插件缓存
 
-Claude Code 把已安装插件缓存在 `~/.claude/plugins/cache/`。本地开发时,对源文件的修改 **不会自动生效**。每次改动后清除缓存:
+Claude Code 把已安装插件缓存在 `~/.claude/plugins/cache/`。本地开发时,对源文件的修改 **不会自动生效**——这时没有 `claude plugin update` 这一步可跑,因为你的工作副本就是源。每次改动后清除缓存:
 
 ```bash
 rm -rf ~/.claude/plugins/cache/claude-code-feishu/
 ```
 
-然后重启 Claude Code 会话。
+然后重启 Claude Code 会话。(如果你是使用者而非贡献者,请看 [升级](#升级) 一节。)
 
 ## 许可证
 

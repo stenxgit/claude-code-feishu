@@ -221,6 +221,31 @@ ps aux | grep "bun.*server.ts" | grep -v grep
 kill <pid>
 ```
 
+## Upgrading
+
+Installed plugins are pinned to the version you installed — a new commit here does not reach an existing install on its own. To pick up a new version:
+
+```bash
+claude plugin marketplace update claude-code-feishu
+claude plugin update lark@claude-code-feishu
+```
+
+Then **restart your Claude Code session** (with the `--dangerously-load-development-channels` flag, as always). The update does not apply to a running session.
+
+If the new behavior still doesn't show up, clear the plugin cache and restart again:
+
+```bash
+rm -rf ~/.claude/plugins/cache/claude-code-feishu/
+```
+
+**New settings are not enabled retroactively.** `/lark:configure` seeds delivery defaults (`ackReaction`, `doneReaction`, `replyFormat`) only when the key is absent from your `access.json`, and it never overwrites a value you already have. That keeps upgrades from changing behavior under you — but it also means a setting introduced after you first configured the channel stays off until you turn it on. To see what you're currently running:
+
+```
+/lark:configure
+```
+
+Anything listed as unset there is opt-in via `/lark:access set <key> <value>`. Most notably, an install created before `replyFormat` existed keeps plain-text replies until you run `/lark:access set replyFormat card`.
+
 ## Development
 
 ### Layout
@@ -250,13 +275,13 @@ CI runs both on every push and pull request.
 
 ### Plugin cache
 
-Claude Code caches installed plugins at `~/.claude/plugins/cache/`. When developing locally, changes to source files are **not automatically reflected**. Clear the cache after each change:
+Claude Code caches installed plugins at `~/.claude/plugins/cache/`. When developing locally, edits to source files are **not automatically reflected** — there is no `claude plugin update` step to run, since your working copy is the source. Clear the cache after each change:
 
 ```bash
 rm -rf ~/.claude/plugins/cache/claude-code-feishu/
 ```
 
-Then restart your Claude Code session.
+Then restart your Claude Code session. (If you're a user rather than a contributor, see [Upgrading](#upgrading) instead.)
 
 ## License
 
