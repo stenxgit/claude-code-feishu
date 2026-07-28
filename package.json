@@ -1,14 +1,22 @@
 {
   "name": "claude-channel-lark",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "type": "module",
   "bin": "./server.ts",
   "scripts": {
-    "start": "bun install --no-summary && bun server.ts"
+    "start": "bun install --no-summary --production && bun server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.24.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
   }
 }
