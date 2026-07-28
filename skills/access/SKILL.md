@@ -115,10 +115,13 @@ Parse `$ARGUMENTS` (space-separated). If empty or unrecognized, show status.
 ### `set <key> <value>`
 
 Delivery/UX config. Supported keys: `ackReaction`, `doneReaction`, `replyToMode`,
-`textChunkLimit`, `chunkMode`, `mentionPatterns`. Validate types:
+`replyFormat`, `textChunkLimit`, `chunkMode`, `mentionPatterns`. Validate types:
 - `ackReaction`: Lark emoji type name (e.g. THUMBSUP, HEART) or `""` to disable
 - `doneReaction`: Lark emoji type name; swaps `ackReaction`→this on reply (requires `ackReaction`). `""` disables the swap
 - `replyToMode`: `off` | `first` | `all`
+- `replyFormat`: `text` | `card`. `card` renders markdown replies (headings, lists,
+  code fences) as an interactive card; plain prose still goes as plain text.
+  Falls back to text if the card is rejected.
 - `textChunkLimit`: number
 - `chunkMode`: `length` | `newline`
 - `mentionPatterns`: JSON array of regex strings

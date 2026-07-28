@@ -64,6 +64,10 @@ Once the channel is running, the user should:
 2. Run `/lark:access pair <code>` in the Claude Code session
 3. Run `/lark:access policy allowlist` to lock down access
 
+Note: permission-approval cards can only be delivered to an allowlisted user
+the bot has an existing DM chat with — the chat_id is learned from the first
+inbound DM. Complete the pairing step before relying on remote approval.
+
 ## File Structure
 
 ```
@@ -75,6 +79,8 @@ claude-code-feishu/
 │   ├── configure/SKILL.md   # /lark:configure skill
 │   ├── access/SKILL.md      # /lark:access skill
 │   └── takeover/SKILL.md    # /lark:takeover skill (switch Lark connection between sessions)
+├── lib/                     # Pure helpers (env, text, gate, attachments, cards)
+├── tests/                   # bun test suites, one per lib module
 ├── .mcp.json                # MCP server configuration
 ├── server.ts                # Main MCP server (Bun + Lark SDK)
 ├── package.json             # Dependencies

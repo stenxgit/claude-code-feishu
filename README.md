@@ -122,13 +122,23 @@ See **[ACCESS.md](./ACCESS.md)** for DM policies, group chats, mention detection
 
 Quick reference: IDs are Lark **open_id** values (e.g., `ou_xxxx`) for users and **chat_id** values (e.g., `oc_xxxx`) for chats. Default policy is `pairing`. Group chats are opt-in per chat_id.
 
+## Reply rendering
+
+Lark plain-text messages render markdown literally — `**bold**`, `#` headings, bullet lists and fenced code blocks all arrive as raw characters, which is a poor fit for assistant output. Set `replyFormat` to `card` and any reply containing markdown is sent as an interactive card instead, where Lark renders it properly:
+
+```
+/lark:access set replyFormat card
+```
+
+Fresh installs get `card` seeded automatically by `/lark:configure`. Existing installs keep `text` until you change it. Plain prose ("ok, done") still goes as a plain-text message either way, and if Lark rejects a card the reply is re-sent as text rather than dropped.
+
 ## Remote permission approval
 
 This is the feature this fork adds on top of upstream. When Claude Code needs your approval to run a dangerous operation (an unallowlisted shell command, a file write, etc.), instead of blocking at the terminal it pushes an **interactive card** to your DM with the bot — so you can authorize from anywhere, including your phone.
 
-**What you see:** a card showing the tool name and the operation details, with three buttons:
+**What you see:** a card showing the tool name, the working directory of the requesting session, and three buttons:
 
-- **查看详情 (Details)** — expand the full request payload
+- **查看详情 (Details)** — expand the description and the full request payload
 - **✅ 允许 (Allow)** — approve this one operation
 - **❌ 拒绝 (Deny)** — reject it
 
@@ -140,13 +150,17 @@ Tap a button and the card updates in place to show the outcome; the decision flo
 
 **Safety:** cards are sent to allowlisted DMs only. **Group chats are excluded** — approvals never go to a group, and only the `open_id`s in your allowlist can act on them.
 
+**One decision per request.** With several people on the allowlist everyone gets a card, but only the first tap counts. The verdict is relayed to Claude Code exactly once; every other copy of that card is updated in place to show who decided what, so nobody is looking at live buttons on a settled request. Requests that nobody answers within 15 minutes have their cards marked as timed out (handle those at the terminal).
+
+**Which session is asking?** The card shows the requesting session's working directory. If you run Claude Code in several projects, that's how you tell which one wants permission.
+
 ## Tools exposed to the assistant
 
 | Tool | Purpose |
 | --- | --- |
 | `reply` | Send to a chat. Takes `chat_id` + `text`, optionally `reply_to` (message_id) for threading and `files` (absolute paths) for attachments. Images send as Lark image messages; other files as documents. Auto-chunks; returns sent message ID(s). |
 | `react` | Add an emoji reaction to any message by ID. Use Lark emoji type names (THUMBSUP, HEART, SMILE, etc). |
-| `edit_message` | Edit a message the bot previously sent. Only works on the bot's own messages. |
+| `edit_message` | Edit a message the bot previously sent. Only works on the bot's own messages; handles both text messages and cards. |
 | `fetch_messages` | Pull recent history from a chat (oldest-first). Max 50 per call. Each line includes the message ID. |
 | `download_attachment` | Download image or file from a specific message by ID to `~/.claude/channels/lark/inbox/`. Returns file paths + metadata. |
 
@@ -160,6 +174,8 @@ All set in `~/.claude/channels/lark/.env`:
 | `LARK_APP_SECRET` | Yes | App Secret from Developer Console |
 | `LARK_DOMAIN` | No | API domain. Default: `open.feishu.cn` (Feishu). Use `open.larksuite.com` for Lark international. |
 | `LARK_ACCESS_MODE` | No | Set to `static` to freeze access config at boot. |
+
+The file is parsed leniently: CRLF line endings, `export FOO=bar`, `#` comments and quoted values all work.
 
 ## Architecture
 
@@ -206,6 +222,31 @@ kill <pid>
 ```
 
 ## Development
+
+### Layout
+
+```
+server.ts    MCP server: all I/O, state, Lark SDK wiring, tool handlers
+lib/         pure helpers, no I/O — unit-tested
+  env.ts           .env parsing
+  text.ts          message-body extraction, outbound chunking
+  gate.ts          inbound access decisions
+  attachments.ts   attachment filename sanitising
+  cards.ts         interactive card payloads
+tests/       bun test suites, one per lib module
+skills/      /lark:configure, /lark:access, /lark:takeover
+```
+
+### Checks
+
+```bash
+bun install
+bun run check      # typecheck + tests
+bun test
+bun run typecheck
+```
+
+CI runs both on every push and pull request.
 
 ### Plugin cache
 

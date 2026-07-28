@@ -89,6 +89,20 @@ Configure outbound behavior with `/lark:access set <key> <value>`.
 
 **`replyToMode`** controls threading on chunked replies. When a long response is split, `first` (default) threads only the first chunk under the inbound message; `all` threads every chunk; `off` sends all chunks standalone.
 
+**`replyFormat`** chooses how replies are rendered. Lark plain-text messages show markdown literally — `**bold**`, `#` headings, `-` bullets and fenced code blocks all arrive as raw characters. Set `card` and any reply containing markdown is sent as an interactive card instead, where Lark renders it properly.
+
+```
+/lark:access set replyFormat card
+/lark:access set replyFormat text
+```
+
+| Value | Behavior |
+| --- | --- |
+| `text` (default for existing installs) | Every reply is a plain-text message. |
+| `card` (seeded on fresh `/lark:configure`) | Replies containing markdown go as an interactive card; plain prose still goes as plain text. If Lark rejects the card, the reply is re-sent as text rather than lost. |
+
+Two notes on `card`: chunking still applies (each chunk becomes its own card), and `edit_message` transparently handles both kinds — it tries the text-edit endpoint first, then the card-update endpoint.
+
 **`textChunkLimit`** sets the split threshold. Default is 4000 characters.
 
 **`chunkMode`** chooses the split strategy: `length` cuts exactly at the limit; `newline` prefers paragraph boundaries.
@@ -106,6 +120,7 @@ Configure outbound behavior with `/lark:access set <key> <value>`.
 | `/lark:access group add oc_xxxx` | Enable a group chat. Flags: `--no-mention`, `--allow id1,id2`. |
 | `/lark:access group rm oc_xxxx` | Disable a group chat. |
 | `/lark:access set ackReaction THUMBSUP` | Set a config key. |
+| `/lark:access set replyFormat card` | Render markdown replies as interactive cards. |
 
 ## Config file
 
@@ -137,6 +152,9 @@ Configure outbound behavior with `/lark:access set <key> <value>`.
 
   // Threading on chunked replies: first | all | off
   "replyToMode": "first",
+
+  // text = plain text. card = render markdown replies as an interactive card.
+  "replyFormat": "card",
 
   // Split threshold. Default 4000.
   "textChunkLimit": 4000,

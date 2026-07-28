@@ -122,13 +122,23 @@ Claude Code 运行后,在飞书 / Lark 上私聊你的机器人——它会回�
 
 速查:ID 是 Lark 的 **open_id**(如 `ou_xxxx`,用于用户)和 **chat_id**(如 `oc_xxxx`,用于会话)。默认策略是 `pairing`。群聊需按 chat_id 逐个开启。
 
+## 回复渲染
+
+飞书纯文本消息不解析 markdown——`**加粗**`、`#` 标题、列表、代码块都会原样显示成字符,而助手的输出恰恰几乎全是 markdown。把 `replyFormat` 设为 `card`,含 markdown 的回复就改用交互卡片发送,由飞书正常渲染:
+
+```
+/lark:access set replyFormat card
+```
+
+全新安装时 `/lark:configure` 会自动写入 `card`;已有安装保持 `text` 不变,直到你手动切换。两种模式下纯散文(比如"好的,已完成")仍走纯文本消息;若卡片被飞书拒绝,回复会自动降级重发为文本,不会丢失。
+
 ## 远程权限审批
 
 这是本 fork 在上游基础上新增的功能。当 Claude Code 需要你批准某个危险操作(未在白名单内的 shell 命令、写文件等)时,它不再卡在终端等待,而是向你与机器人的私聊推送一张**交互卡片**——于是你在任何地方都能授权,包括手机上。
 
-**你会看到:** 一张显示工具名和操作详情的卡片,带三个按钮:
+**你会看到:** 一张卡片,显示工具名、发起请求的会话所在工作目录,以及三个按钮:
 
-- **查看详情** —— 展开完整的请求内容
+- **查看详情** —— 展开说明和完整的请求内容
 - **✅ 允许** —— 批准这一次操作
 - **❌ 拒绝** —— 拒绝它
 
@@ -140,13 +150,17 @@ Claude Code 运行后,在飞书 / Lark 上私聊你的机器人——它会回�
 
 **安全:** 卡片只发给白名单内的私聊。**群聊被排除在外**——审批永远不会发到群里,且只有白名单里的 `open_id` 能操作。
 
+**一个请求只结算一次。** 白名单里有多人时每人都会收到卡片,但只有第一次点击生效。结论只会回传给 Claude Code 一次,其余各端的同一张卡片会被就地更新成"已由他人处理",不会让人对着一个已经定案的请求继续点按钮。15 分钟内无人处理的请求,卡片会被标记为超时(这类请回终端处理)。
+
+**是哪个会话在请求?** 卡片上会显示发起会话的工作目录。如果你同时在多个项目里跑 Claude Code,靠这一行区分。
+
 ## 暴露给助手的工具
 
 | 工具 | 用途 |
 | --- | --- |
 | `reply` | 向某个会话发送消息。需要 `chat_id` + `text`,可选 `reply_to`(message_id,用于线程回复)和 `files`(绝对路径,用于附件)。图片以 Lark 图片消息发送,其他文件以文档发送。自动分块;返回已发送消息的 ID。 |
 | `react` | 给任意消息(按 ID)添加表情回应。使用 Lark 表情类型名(THUMBSUP、HEART、SMILE 等)。 |
-| `edit_message` | 编辑机器人此前发送的消息。仅对机器人自己的消息有效。 |
+| `edit_message` | 编辑机器人此前发送的消息。仅对机器人自己的消息有效;文本消息和卡片都支持。 |
 | `fetch_messages` | 拉取某会话的近期历史(由旧到新)。每次最多 50 条。每行包含消息 ID。 |
 | `download_attachment` | 按消息 ID 把图片或文件下载到 `~/.claude/channels/lark/inbox/`。返回文件路径 + 元数据。 |
 
@@ -160,6 +174,8 @@ Claude Code 运行后,在飞书 / Lark 上私聊你的机器人——它会回�
 | `LARK_APP_SECRET` | 是 | 开发者后台的 App Secret |
 | `LARK_DOMAIN` | 否 | API 域名。默认:`open.feishu.cn`(飞书)。Lark 国际版用 `open.larksuite.com`。 |
 | `LARK_ACCESS_MODE` | 否 | 设为 `static` 可在启动时冻结访问配置。 |
+
+该文件的解析是宽松的:CRLF 换行、`export FOO=bar`、`#` 注释、带引号的值都能正确读取。
 
 ## 架构
 
@@ -206,6 +222,31 @@ kill <pid>
 ```
 
 ## 开发
+
+### 目录结构
+
+```
+server.ts    MCP 服务器:所有 I/O、状态、Lark SDK 接线、工具处理
+lib/         纯函数,不做 I/O —— 有单元测试覆盖
+  env.ts           .env 解析
+  text.ts          消息体解析、出站分块
+  gate.ts          入站访问决策
+  attachments.ts   附件文件名净化
+  cards.ts         交互卡片结构
+tests/       bun test 测试,按 lib 模块一一对应
+skills/      /lark:configure、/lark:access、/lark:takeover
+```
+
+### 检查
+
+```bash
+bun install
+bun run check      # 类型检查 + 测试
+bun test
+bun run typecheck
+```
+
+CI 会在每次 push 和 PR 上跑这两项。
 
 ### 插件缓存
 
