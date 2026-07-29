@@ -1,7 +1,7 @@
 {
   "name": "lark",
   "description": "Lark (Larksuite / Feishu) channel for Claude Code \u2014 messaging bridge with built-in access control and remote permission approval via interactive cards. Manage pairing, allowlists, and policy via /lark:access.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "stenxgit",
     "url": "https://github.com/stenxgit/claude-code-feishu"
