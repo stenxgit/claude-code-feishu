@@ -103,19 +103,28 @@ describe('normalizeMarkdown', () => {
     expect(normalizeMarkdown('- [ ] todo\n- [x] done')).toBe('- ☐ todo\n- ☑ done')
   })
 
-  test('leaves ordinary markdown untouched', () => {
-    expect(normalizeMarkdown('# Title\n**bold**')).toBe('# Title\n**bold**')
+  test('leaves markdown Feishu renders on its own untouched', () => {
+    const ok = '## Title\n\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n`inline`'
+    expect(normalizeMarkdown(ok)).toBe(ok)
   })
 })
 
 describe('buildMarkdownCard', () => {
   test('wraps content in a markdown element', () => {
-    const card = buildMarkdownCard('# Hi')
-    expect(card.elements[0]).toEqual({ tag: 'markdown', content: '# Hi' })
+    const card = buildMarkdownCard('## Hi')
+    expect(card.body.elements[0]).toEqual({ tag: 'markdown', content: '## Hi' })
+  })
+
+  // Headings, blockquotes, tables and inline code only render under 2.0. Drop
+  // this and the card silently regresses to showing markdown source.
+  test('declares schema 2.0 — 1.0 renders headings and tables as raw source', () => {
+    const card = buildMarkdownCard('## Hi')
+    expect(card.schema).toBe('2.0')
+    expect(card.elements).toBeUndefined()
   })
 
   test('caps content at the card limit', () => {
     const card = buildMarkdownCard('z'.repeat(CARD_MARKDOWN_LIMIT + 5000))
-    expect(card.elements[0].content.length).toBeLessThan(CARD_MARKDOWN_LIMIT + 100)
+    expect(card.body.elements[0].content.length).toBeLessThan(CARD_MARKDOWN_LIMIT + 100)
   })
 })

@@ -93,6 +93,17 @@ im:resource, im:chat, im:chat:readonly
 - 图文混排的消息是 `post` 类型,不是 `image`
 - `interactive` 卡片有 v1(`elements`)和 v2(`body.elements`)两种结构,解析要都兼容
 
+### markdown 渲染必须用卡片 JSON 2.0
+
+`tag: "markdown"` 组件在两种卡片结构下**渲染能力不同**。官方文档:「标题、引用、行内引用、表格、数字角标等语法仅支持在 JSON 2.0 结构的富文本组件中使用」。
+
+- **1.0**(顶层 `elements`,无 `schema`):只渲染粗体 / 斜体 / 删除线、链接、有序无序列表、围栏代码块、分割线。标题、引用、表格、行内代码**原样吐出源码**
+- **2.0**(`schema: "2.0"` + `body.elements`):完整 markdown。围栏代码块仍然正常(文档里说的不支持 `CodeBlock` 指缩进式代码块,不是围栏式)
+
+所以 `buildMarkdownCard` 必须发 2.0。宽屏字段也换了名:1.0 是 `config.wide_screen_mode: true`,2.0 是 `config.width_mode: "fill"`。
+
+权限卡片仍是 1.0——它只用粗体和行内代码,且 `update_multi` 的就地刷新行为已在 1.0 上验证过,不要顺手一起升级。
+
 ### 消息编辑分两个接口
 
 - `PUT /im/v1/messages/{id}` —— 编辑 text / post 消息

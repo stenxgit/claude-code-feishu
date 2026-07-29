@@ -122,13 +122,27 @@ export function normalizeMarkdown(text: string): string {
     .replace(/^(\s*[-*+]\s+)\[[xX]\]\s+/gm, '$1☑ ')
 }
 
-/** Wrap markdown in a minimal interactive card. */
+/**
+ * Wrap markdown in a minimal interactive card.
+ *
+ * The `schema: '2.0'` line is what makes markdown render. Feishu's docs are
+ * explicit: headings, blockquotes, inline quotes, tables and inline code are
+ * "只支持在 JSON 2.0 结构的富文本组件中使用". Under the 1.0 structure (top-level
+ * `elements`, no `schema`) the very same `tag: 'markdown'` component renders
+ * those as raw source — "## title", "> quote", "| a | b |" — while bold,
+ * lists and code fences work. Verified against live cards on 2026-07-29.
+ *
+ * `width_mode` is 2.0's spelling of 1.0's `wide_screen_mode`.
+ */
 export function buildMarkdownCard(text: string): any {
   return {
-    config: { wide_screen_mode: true },
-    elements: [
-      { tag: 'markdown', content: truncate(normalizeMarkdown(text), CARD_MARKDOWN_LIMIT) },
-    ],
+    schema: '2.0',
+    config: { width_mode: 'fill' },
+    body: {
+      elements: [
+        { tag: 'markdown', content: truncate(normalizeMarkdown(text), CARD_MARKDOWN_LIMIT) },
+      ],
+    },
   }
 }
 
